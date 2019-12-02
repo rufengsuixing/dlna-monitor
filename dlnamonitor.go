@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
 	"golang.org/x/net/ipv4"
 )
 
@@ -50,8 +49,9 @@ func udpMuticastListener(resub chan map[string]int) {
 	devices := make(map[string]int)
 	var s string
 	shout := make(chan *device)
-	var mindevice device
-	min := 6666
+	var mindevice *device
+	var min = 60
+	var timeout <-chan time.Time
 	for {
 		go func() {
 			one := device{}
@@ -85,17 +85,26 @@ func udpMuticastListener(resub chan map[string]int) {
 					fmt.Println("Unknown group")
 					return
 				}
+			}else{
+				println("not muticast")
 			}
 		}()
 		timestamp := time.Now().Unix()
 		resubflag := false
 		var one *device
+		
+		if len(devices) != 0{
+			timeout=time.After(time.Duration(min) * time.Second)
+		}else{
+			timeout=nil
+		}
 		select {
 		case one = <-shout:
 			//println("parse %s%s", one.ipport, one.timeout)
 			if len(devices) == 0 {
 				resubflag = true
 				min = one.timeout
+				mindevice = one
 			} else if one.ipport == mindevice.ipport {
 				min = one.timeout
 				timegap := int((time.Now().Unix() - timestamp) / int64(time.Second))
@@ -110,7 +119,7 @@ func udpMuticastListener(resub chan map[string]int) {
 					}
 					if min > devices[o] {
 						min = devices[o]
-						mindevice = device{o, devices[o]}
+						mindevice = &device{o, devices[o]}
 					}
 				}
 
@@ -120,7 +129,12 @@ func udpMuticastListener(resub chan map[string]int) {
 				//println("resub")
 				resub <- devices
 			}
-		case <-time.After(time.Duration(min) * time.Second):
+		case <-timeout: 
+			if len(devices)==0{
+				min=600
+				println("timeout but no device")
+			}else{
+			println(mindevice.ipport,"device timeout")
 			delete(devices, mindevice.ipport)
 			timegap := int((time.Now().Unix() - timestamp) / int64(time.Second))
 			for o := range devices {
@@ -134,12 +148,12 @@ func udpMuticastListener(resub chan map[string]int) {
 				}
 				if min > devices[o] {
 					min = devices[o]
-					mindevice = device{o, devices[o]}
+					mindevice = &device{o, devices[o]}
 				}
 			}
 			resub <- devices
 			//println("resub")
-		}
+		}}
 	}
 }
 
@@ -156,11 +170,12 @@ func tcpdump(resub chan map[string]int) {
 			addstrlist = append(addstrlist, fmt.Sprintf("(dst %s and port %s)", a[:pos], a[pos+1:]))
 		}
 		if running {
+			println("kill tcpdump")
 			killprint <- true
 		}
 		if len(d) != 0 {
-			println(fmt.Sprintf("tcpdump tcp and (%s)", strings.Join(addstrlist, " or ")))
-			go Run(killprint, "tcpdump", fmt.Sprintf("tcp and (%s)", strings.Join(addstrlist, " or ")))
+			println(fmt.Sprintf("tcpdump -n tcp and (%s)", strings.Join(addstrlist, " or ")))
+			go Run(killprint, "tcpdump","-n",fmt.Sprintf("tcp and (%s)", strings.Join(addstrlist, " or ")))
 			running = true
 		} else {
 			running = false
@@ -195,20 +210,24 @@ func Run(killprint chan bool, name string, arg ...string) error {
 			if epos == -1 {
 				continue
 			}
-
+			if (epos-spos>2){
 			fmt.Println(s[spos+1 : epos-1])
-			s = s[epos+4:]
+			}
+			s = s[epos+5:]
 			if err != nil {
 				break
 			}
 		}
 	}()
 
-	if err = cmd.Wait(); err != nil {
-		return err
-	}
+//	if err = cmd.Wait(); err != nil {
+//		return err
+//	}
+	println("wait to kill tcpdump")
 	<-killprint
+	println("true kill")
 	cmd.Process.Kill()
+	cmd.Wait()
 	return nil
 }
 
