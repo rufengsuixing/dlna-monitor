@@ -49,13 +49,15 @@ func udpMuticastListener(resub chan map[string]int) {
 	devices := make(map[string]int)
 	var s string
 	shout := make(chan *device)
-	var mindevice *device
+	var mindevice string
 	var min = 60
-	var timeout <-chan time.Time
-	for {
+	var timeout *time.Timer
 		go func() {
+			for {
 			one := device{}
+			//println("read")
 			n, cm, _, err := p.ReadFrom(b)
+			//println("readok")
 			if err != nil {
 				fmt.Println(err)
 			}
@@ -64,7 +66,7 @@ func udpMuticastListener(resub chan map[string]int) {
 					s = string(b[:n])
 					spos = strings.Index(s, "CACHE-CONTROL: max-age=")
 					if spos == -1 {
-						return
+						continue
 					}
 					spos += 23
 					epos = strings.Index(s[spos:], "\n") - 1 + spos
@@ -72,88 +74,83 @@ func udpMuticastListener(resub chan map[string]int) {
 
 					spos = strings.Index(s[epos:], "LOCATION: http://") + epos
 					if spos == -1 {
-						return
+						continue
 					}
 					spos += 17
 					//mpos = strings.Index(s[spos:], ":") + spos
 					epos = strings.Index(s[spos:], "/description.xml") + spos
 					one.ipport = s[spos:epos]
 					one.timeout = age
+					//println("get", s[spos:epos], age)
 					shout <- &one
-					//println("get %s%s", s[spos:epos], age)
+					//print(".")
+					//println("sended", s[spos:epos], age)
 				} else {
 					fmt.Println("Unknown group")
 					return
 				}
 			}else{
 				println("not muticast")
-			}
+				return
+			}}
 		}()
+		for {
 		timestamp := time.Now().Unix()
 		resubflag := false
 		var one *device
-		
-		if len(devices) != 0{
-			timeout=time.After(time.Duration(min) * time.Second)
-		}else{
-			timeout=nil
+		timeout = time.NewTimer(time.Duration(min)*time.Second)
+		if len(devices) == 0{
+			timeout.Stop()
 		}
 		select {
 		case one = <-shout:
-			//println("parse %s%s", one.ipport, one.timeout)
+			timeout.Stop()
+			min = one.timeout
 			if len(devices) == 0 {
 				resubflag = true
-				min = one.timeout
-				mindevice = one
-			} else if one.ipport == mindevice.ipport {
-				min = one.timeout
-				timegap := int((time.Now().Unix() - timestamp) / int64(time.Second))
-				for o := range devices {
-					devices[o] -= timegap
-					if devices[o] < 0 {
-						if o == one.ipport {
-							continue
-						}
-						delete(devices, o)
-						resubflag = true
-					}
-					if min > devices[o] {
-						min = devices[o]
-						mindevice = &device{o, devices[o]}
-					}
-				}
-
-			}
-			devices[one.ipport] = one.timeout
-			if resubflag {
-				//println("resub")
-				resub <- devices
-			}
-		case <-timeout: 
-			if len(devices)==0{
-				min=600
-				println("timeout but no device")
+				devices[one.ipport] = one.timeout
+				mindevice=one.ipport
 			}else{
-			println(mindevice.ipport,"device timeout")
-			delete(devices, mindevice.ipport)
-			timegap := int((time.Now().Unix() - timestamp) / int64(time.Second))
-			for o := range devices {
-				devices[o] -= timegap
-				if devices[o] < 0 {
+				devices[one.ipport] = one.timeout
+				timegap := int((time.Now().Unix() - timestamp) / int64(time.Second))
+				//println(timegap)
+				for o := range devices {
 					if o == one.ipport {
 						continue
 					}
-					delete(devices, o)
-					resubflag = true
+					println(timegap)
+					devices[o] -= timegap
+					if devices[o] < 0 {
+						delete(devices, o)
+						resubflag = true
+						println("del")
+					}else if min > devices[o] {
+						min = devices[o]
+						mindevice=o
+					}
 				}
-				if min > devices[o] {
-					min = devices[o]
-					mindevice = &device{o, devices[o]}
-				}
+			}	
+			if resubflag {
+				println("resub")
+				resub <- devices
 			}
+		case <-timeout.C: 
+			println(mindevice,"device timeout")
+			delete(devices, mindevice)
+			timegap := int((time.Now().Unix() - timestamp) / int64(time.Second))
+			min=600
+			for o := range devices {
+				devices[o] -= timegap
+				if devices[o] < 0 {
+					delete(devices, o)
+				}else if min > devices[o] {
+					min = devices[o]
+					mindevice =o 
+				}
+				}
 			resub <- devices
 			//println("resub")
-		}}
+		}
 	}
 }
 
